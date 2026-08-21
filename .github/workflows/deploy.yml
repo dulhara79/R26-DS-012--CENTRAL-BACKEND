@@ -84,6 +84,8 @@ jobs:
       - name: Push to the Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SPACE_URL: ${{ vars.SPACE_URL }}
+          SPACE_ID: ${{ vars.SPACE_ID }}
         run: |
           if [ -z "$HF_TOKEN" ]; then
             echo "::error::HF_TOKEN secret is not set on this repository."
@@ -91,7 +93,7 @@ jobs:
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add space "https://user:${HF_TOKEN}@huggingface.co/spaces/${vars.SPACE_ID}"
+          git remote add space "https://user:${HF_TOKEN}@huggingface.co/spaces/${SPACE_ID}"
           # GitHub is the single source of truth; the Space is a mirror.
           git push --force space HEAD:refs/heads/main
 
@@ -99,11 +101,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          echo "watching https://huggingface.co/spaces/${vars.SPACE_ID}"
+          echo "watching https://huggingface.co/spaces/${SPACE_ID}"
           sleep 15
           for i in $(seq 1 60); do
             stage=$(curl -s -H "Authorization: Bearer ${HF_TOKEN}" \
-              "https://huggingface.co/api/spaces/${vars.SPACE_ID}/runtime" \
+              "https://huggingface.co/api/spaces/${SPACE_ID}/runtime" \
               | python -c "import sys,json;print(json.load(sys.stdin).get('stage','UNKNOWN'))" 2>/dev/null || echo UNKNOWN)
             echo "[$i] stage=$stage"
             case "$stage" in
@@ -121,12 +123,12 @@ jobs:
       - name: Verify the deployed API
         run: |
           for i in $(seq 1 20); do
-            if curl -sf "${vars.SPACE_URL}/health" -o health.json; then
+            if curl -sf "${SPACE_URL}/health" -o health.json; then
               cat health.json; echo
-              curl -sf "${vars.SPACE_URL}/v1/ops/services" | python -m json.tool || true
+              curl -sf "${SPACE_URL}/v1/ops/services" | python -m json.tool || true
               exit 0
             fi
             sleep 15
           done
-          echo "::error::${vars.SPACE_URL}/health never responded."
+          echo "::error::${SPACE_URL}/health never responded."
           exit 1
