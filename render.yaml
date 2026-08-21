@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: r26-ds-012-backend
+    runtime: docker
+    plan: starter          # free tier sleeps after 15 min; starter does not
+    healthCheckPath: /health
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MRN_PEPPER
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false        # paste your Neon / Supabase / Render Postgres URL
+      - key: C1_BASE_URL
+        sync: false
+      - key: C2_BASE_URL
+        sync: false
+      - key: C4_BASE_URL
+        sync: false
+      - key: FUSION_BASE_URL
+        sync: false
+      - key: C3_BASE_URL
+        sync: false
+      - key: HF_TOKEN
+        sync: false
