@@ -1,0 +1,136 @@
+name: CI / Deploy to Hugging Face Space
+
+# Tests run on every push and every PR.
+# The Space is only updated when main changes and the tests passed.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:        # lets you redeploy by hand from the Actions tab
+
+env:
+  SPACE_ID: ${{ vars.SPACE_ID }}
+  SPACE_URL: ${{ vars.SPACE_URL }}
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. Does it actually work?
+  # ---------------------------------------------------------------------
+  test:
+    name: Test (SQLite + mocked model services)
+    runs-on: ubuntu-latest
+    env:
+      # No .env in CI, so config.py falls back to these.
+      DATABASE_URL: sqlite:///./ci.db
+      JWT_SECRET: ci-only-secret-not-used-anywhere-real
+      MRN_PEPPER: ci-only-pepper
+      # All five service URLs stay blank -> everything runs mocked.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import check
+        run: python -c "from app.main import app; print('app imports cleanly')"
+
+      - name: Seed the demo database
+        run: python seed.py
+
+      - name: Start the API
+        run: |
+          nohup uvicorn app.main:app --port 8000 --log-level warning > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health > /dev/null && exit 0
+            sleep 1
+          done
+          echo "::error::server did not become healthy in 30s"
+          cat server.log
+          exit 1
+
+      - name: End-to-end smoke test
+        run: python smoke_test.py
+
+      - name: Server log on failure
+        if: failure()
+        run: cat server.log || true
+
+  # ---------------------------------------------------------------------
+  # 2. Mirror main into the Hugging Face Space
+  # ---------------------------------------------------------------------
+  deploy:
+    name: Deploy to Hugging Face Space
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # HF needs full history, not a shallow clone
+          lfs: true
+
+      - name: Guard against committed secrets
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env is tracked in git. Remove it before deploying."
+            exit 1
+          fi
+          echo "no .env in the index"
+
+      - name: Push to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is not set on this repository."
+            exit 1
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add space "https://user:${HF_TOKEN}@huggingface.co/spaces/${SPACE_ID}"
+          # GitHub is the single source of truth; the Space is a mirror.
+          git push --force space HEAD:refs/heads/main
+
+      - name: Wait for the Space to finish building
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          echo "watching https://huggingface.co/spaces/${SPACE_ID}"
+          sleep 15
+          for i in $(seq 1 60); do
+            stage=$(curl -s -H "Authorization: Bearer ${HF_TOKEN}" \
+              "https://huggingface.co/api/spaces/${SPACE_ID}/runtime" \
+              | python -c "import sys,json;print(json.load(sys.stdin).get('stage','UNKNOWN'))" 2>/dev/null || echo UNKNOWN)
+            echo "[$i] stage=$stage"
+            case "$stage" in
+              RUNNING)
+                echo "Space is running."
+                exit 0 ;;
+              BUILD_ERROR|RUNTIME_ERROR|CONFIG_ERROR|NO_APP_FILE)
+                echo "::error::Space failed with stage $stage. See the Space logs."
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::warning::Still building after 10 minutes. Check the Space manually."
+
+      - name: Verify the deployed API
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf "${SPACE_URL}/health" -o health.json; then
+              cat health.json; echo
+              curl -sf "${SPACE_URL}/v1/ops/services" | python -m json.tool || true
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::${SPACE_URL}/health never responded."
+          exit 1

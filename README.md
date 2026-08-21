@@ -1,3 +1,14 @@
+---
+title: R26-DS-012 Central Backend
+emoji: 🧠
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 8000
+pinned: false
+short_description: Orchestrator for the R26-DS-012 multimodal anxiety framework
+---
+
 # R26-DS-012 — Central Backend
 
 The missing middle layer. Both Flutter apps talk to this and nothing else; this
