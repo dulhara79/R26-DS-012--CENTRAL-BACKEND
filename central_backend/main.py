@@ -63,7 +63,7 @@ _CAREX_BASE_WEIGHTS = carex.load_base_weights()
 SUPPORT_BANK_VERSION = __import__("os").getenv("SUPPORT_BANK_VERSION", "synthetic-v1")
 
 
-app = FastAPI(title="Central Backend — R26-DS-012", version="cb-v1.0", lifespan=lifespan)
+app = FastAPI(title="Central Backend — R26-DS-012", version="cb-v1.1", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
