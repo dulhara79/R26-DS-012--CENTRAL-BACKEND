@@ -281,6 +281,8 @@ class AttentionEpisodeState(Base):
     policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
     confirmation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_confirmation_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    last_forecast_result_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("forecast_results.forecast_result_id"), nullable=True)
     event_emitted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     episode_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     current_event_id: Mapped[Optional[str]] = mapped_column(
