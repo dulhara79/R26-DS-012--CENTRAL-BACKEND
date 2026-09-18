@@ -24,13 +24,14 @@ import assessment_service
 import auth
 import conformal
 import fusion_client
+import forecast_service
 import gate
 import identity
 import modality_clients as mc
 import rag_client
-from db_models import (AuditLog, Clinician, ClinicianSubjectAssignment, FusionResult,
-                       ModalityReading, PairingCode, Subject, SubjectAlias, Verdict,
-                       get_session, init_db, utcnow, SupportBankNote, SessionLocal)
+from db_models import (AuditLog, Clinician, ClinicianSubjectAssignment, ForecastResult,
+                       FusionResult, ModalityReading, PairingCode, Subject, SubjectAlias,
+                       Verdict, get_session, init_db, utcnow, SupportBankNote, SessionLocal)
 from schemas.phase0_v1 import AssessmentSummary, PrincipalType
 
 ALL_MODALITIES = ["c1_physiological", "c2_behavioral", "c3_clinical_nlp", "c4_demographic"]
@@ -667,10 +668,45 @@ def ingest_physiological(
     result = mc.call_c1(c1_user_id)
     row = _store(db, subject_id, "c1_physiological", result)
     db.commit()
+
+    # Current assessment and future forecast remain separate persisted concepts.
+    # Fusion may be debounced, but the already-returned C1 future projection can
+    # still be persisted against the latest authoritative FusionResult.
     fusion_info = _auto_fuse(db, subject_id, "physio-ingest", debounce=True)
-    return {"subject_id": subject_id, "reading_id": row.id,
-            "status": result.status, "score": result.raw_score, "note": result.note,
-            **fusion_info}
+    latest_fusion = assessment_service.latest_fusion_row(db, subject_id)
+    forecast_row = forecast_service.persist_c1_forecast(
+        db,
+        subject_id=subject_id,
+        reading=row,
+        fusion_row=latest_fusion,
+    )
+    if forecast_row is not None:
+        _audit(
+            db,
+            subject_id,
+            "forecast.persisted",
+            {
+                "forecast_result_id": forecast_row.forecast_result_id,
+                "fusion_result_id": forecast_row.fusion_result_id,
+                "source_reading_id": forecast_row.source_reading_id,
+                "scope": forecast_row.scope,
+                "horizon_minutes": forecast_row.horizon_minutes,
+            },
+            principal.actor_id,
+        )
+        db.commit()
+
+    return {
+        "subject_id": subject_id,
+        "reading_id": row.id,
+        "status": result.status,
+        "score": result.raw_score,
+        "note": result.note,
+        "forecast_result_id": (
+            forecast_row.forecast_result_id if forecast_row is not None else None
+        ),
+        **fusion_info,
+    }
 
 
 class BehaviouralAggregate(BaseModel):
