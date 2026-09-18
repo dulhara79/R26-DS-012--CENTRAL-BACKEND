@@ -8,7 +8,6 @@ COPY central_backend/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY --chown=user:user central_backend /app/central_backend
-COPY --chown=user:user fusion_service /app/fusion_service
 
 USER user
 WORKDIR /app/central_backend
