@@ -1,22 +1,17 @@
 FROM python:3.11-slim
 
-# Hugging Face Spaces run containers as UID 1000. Running as root works on
-# Render but causes permission errors on HF, so build for the stricter host.
 RUN useradd -m -u 1000 user
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY central_backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY --chown=user:user central_backend /app/central_backend
+COPY --chown=user:user fusion_service /app/fusion_service
+
 USER user
-ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
-
-WORKDIR $HOME/app
-
-COPY --chown=user requirements.txt .
-RUN pip install --user -r requirements.txt
-
-COPY --chown=user . .
-
-# HF routes to app_port from README frontmatter (8000).
-# Render injects PORT. One line satisfies both.
+WORKDIR /app/central_backend
 EXPOSE 8000
-CMD ["sh","-c","uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

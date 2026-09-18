@@ -6,4 +6,3 @@ __pycache__
 *.db
 *.log
 .env
-README.md

@@ -1,0 +1,51 @@
+name: Central Backend Baseline CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    env:
+      MRN_PEPPER: ci-only-not-for-production
+      DATABASE_URL: sqlite:///./ci-central-backend.db
+      FUSION_MODE: inprocess
+      FUSION_SERVICE_DIR: ../fusion_service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Central Backend dependencies
+        run: pip install -r central_backend/requirements.txt
+
+      - name: Verify pinned source layout
+        run: |
+          test -f central_backend/main.py
+          test -f central_backend/db_models.py
+          test -f central_backend/gate.py
+          test -f central_backend/fusion_client.py
+          test -f fusion_service/fusion.py
+          test -f fusion_service/harmonise.py
+
+      - name: Run synchronized Central Backend validation
+        working-directory: central_backend
+        run: python test_backend.py
+
+      - name: Import application
+        working-directory: central_backend
+        run: python -c "from main import app; print(app.title)"
+
+      - name: Check clean source identity
+        run: |
+          echo "component4final commit: a1ceef8daba268dac24d81aedd76c89e7c9ccc6a"
+          echo "central_backend tree: 87585bb3c823b9de449c1a0be1efd9d65f815fd2"
+          echo "fusion_service tree: 1184427955ddd2f7be40eb00f915290356177a14"
