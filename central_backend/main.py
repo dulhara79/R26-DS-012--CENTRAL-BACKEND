@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -187,6 +187,10 @@ def provision_assignment(
     subject = db.get(Subject, req.subject_id)
     if subject is None:
         raise HTTPException(status_code=404, detail="subject not found")
+    if req.active and clinician.status != "active":
+        raise HTTPException(status_code=409, detail="cannot activate assignment for inactive clinician")
+    if req.active and subject.status != "active":
+        raise HTTPException(status_code=409, detail="cannot activate assignment for inactive subject")
 
     row = db.scalar(select(ClinicianSubjectAssignment).where(
         ClinicianSubjectAssignment.clinician_id == req.clinician_id,
