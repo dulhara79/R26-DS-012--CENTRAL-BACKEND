@@ -52,6 +52,19 @@ _clinician_token = jwt.encode(
     os.environ["AUTH_JWT_SECRET"],
     algorithm="HS256",
 )
+_admin_token = jwt.encode(
+    {
+        "sub": "auth-sub-admin-test",
+        "role": "admin",
+        "principal_type": "admin",
+        "iss": os.environ["AUTH_JWT_ISSUER"],
+        "aud": os.environ["AUTH_JWT_AUDIENCE"],
+        "exp": _now + dt.timedelta(hours=1),
+    },
+    os.environ["AUTH_JWT_SECRET"],
+    algorithm="HS256",
+)
+_admin_headers = {"Authorization": f"Bearer {_admin_token}"}
 _seed_db = SessionLocal()
 try:
     if _seed_db.get(Clinician, "DR_TEST") is None:
@@ -265,14 +278,26 @@ check("repeated self-enrolment reuses subject",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 
 r = client.get("/v1/subjects/resolve", params={"app_user_id": self_id})
-check("self-enrolled patient resolves by app_user_id",
+check("unassigned clinician cannot resolve self-enrolled patient",
+      r.status_code == 403, r.text)
+
+r = client.post(
+    "/v1/admin/assignments",
+    json={"clinician_id": "DR_TEST", "subject_id": P_SELF, "active": True},
+    headers=_admin_headers,
+)
+check("admin can assign self-enrolled patient to clinician",
+      r.status_code == 200 and r.json().get("active") is True, r.text)
+
+r = client.get("/v1/subjects/resolve", params={"app_user_id": self_id})
+check("assigned self-enrolled patient resolves by app_user_id",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 r = client.get("/v1/subjects/resolve", params={"mrn": self_id})
-check("doctor QR lookup resolves the self-enrolled patient",
+check("assigned doctor QR lookup resolves self-enrolled patient",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 
-r = client.post("/v1/subjects", json={"mrn": self_id, "enrolled_by": "dr.perera"})
-check("doctor enrolment reuses the self-enrolled subject",
+r = client.post("/v1/subjects", json={"mrn": self_id, "enrolled_by": "ignored-client-value"})
+check("doctor enrolment reuses assigned self-enrolled subject",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 
 doctor_first_id = "P_FEDCBA0987654321"
