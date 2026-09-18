@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import gate
+import forecast_service
 from db_models import FusionResult, ModalityReading
 from schemas.phase0_v1 import (
     AssessmentStatus,
@@ -278,6 +279,7 @@ def build_assessment(
     row: FusionResult,
     *,
     audience: Literal["clinician", "patient"] = "clinician",
+    forecast_mode: Literal["current", "historical"] = "current",
 ) -> AssessmentSummary:
     """Project one persisted FusionResult into the frozen AssessmentSummary."""
     status = assessment_status_for_row(row)
@@ -314,13 +316,25 @@ def build_assessment(
         # changing the authoritative assessment identity.
         modalities = []
 
+    if forecast_mode == "historical":
+        forecast_row = forecast_service.latest_forecast_for_fusion(db, row.id)
+    else:
+        forecast_row = forecast_service.latest_forecast_for_fusion(
+            db,
+            row.id,
+            valid_at=dt.datetime.now(dt.timezone.utc),
+        )
+    forecast = (
+        forecast_service.to_projection(forecast_row)
+        if forecast_row is not None
+        else None
+    )
+
     return AssessmentSummary(
         subject_id=row.subject_id,
         fusion_result_id=row.id,
         current_assessment=current,
-        # Phase 3 owns ForecastResult persistence. Do not manufacture one from
-        # C1 or from current fusion during a read.
-        forecast=None,
+        forecast=forecast,
         confidence=confidence,
         assessment_status=status,
         modalities=modalities,
@@ -334,4 +348,12 @@ def build_history(
     rows: Iterable[FusionResult],
 ) -> list[AssessmentSummary]:
     """Build clinician history only from persisted state; no external calls."""
-    return [build_assessment(db, row, audience="clinician") for row in rows]
+    return [
+        build_assessment(
+            db,
+            row,
+            audience="clinician",
+            forecast_mode="historical",
+        )
+        for row in rows
+    ]
