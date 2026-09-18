@@ -1272,6 +1272,10 @@ def health():
         "components_configured": {m: fn() for m, fn in mc.CONFIGURED.items()},
         "rag": rag_client.check_rag_health(),
         "mrn_pepper_set": bool(identity.MRN_PEPPER),
+        "auth": {
+            "end_user_jwt_configured": auth.auth_configured(),
+            "authorization_model": "verified-principal + server-owned-assignment",
+        },
         "gate": {"min_usable_modalities": gate.MIN_USABLE_MODALITIES,
                  "excluded": sorted(gate.EXCLUDED_MODALITIES),
                  "max_age_minutes": gate.MAX_AGE_MINUTES},
