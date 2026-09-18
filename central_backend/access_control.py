@@ -154,3 +154,32 @@ def assignment_is_active(
 def end_assignment(assignment: ClinicianSubjectAssignment) -> None:
     assignment.active = False
     assignment.ended_at = utcnow()
+
+
+def require_privileged_operator(principal: VerifiedPrincipal) -> VerifiedPrincipal:
+    if principal.principal_type not in {PrincipalType.ADMIN, PrincipalType.RESEARCHER}:
+        raise HTTPException(status_code=403, detail="privileged operator required")
+    return principal
+
+
+def require_subject_access(
+    db: Session,
+    principal: VerifiedPrincipal,
+    subject_id: str,
+    *,
+    clinician_allowed: bool = True,
+    patient_allowed: bool = True,
+) -> None:
+    if principal.principal_type == PrincipalType.CLINICIAN:
+        if not clinician_allowed:
+            raise HTTPException(status_code=403, detail="clinician access not permitted")
+        require_clinician_assignment(db, principal, subject_id)
+        return
+
+    if principal.principal_type == PrincipalType.PATIENT:
+        if not patient_allowed:
+            raise HTTPException(status_code=403, detail="patient access not permitted")
+        require_patient_subject(db, principal, subject_id)
+        return
+
+    raise HTTPException(status_code=403, detail="principal not permitted for this subject")
