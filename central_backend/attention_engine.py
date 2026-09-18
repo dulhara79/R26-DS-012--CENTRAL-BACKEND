@@ -326,6 +326,7 @@ def acknowledge(
         .execution_options(synchronize_session=False)
     )
     db.flush()
+    db.expire_all()
     row = db.get(AttentionEventRecord, event_id)
     if row is None:
         return None
@@ -357,6 +358,7 @@ def resolve(
         .execution_options(synchronize_session=False)
     )
     db.flush()
+    db.expire_all()
     row = db.get(AttentionEventRecord, event_id)
     if row is None:
         return None
