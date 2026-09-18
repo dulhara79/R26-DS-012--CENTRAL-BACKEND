@@ -990,13 +990,18 @@ def _latest_fusion(db: Session, subject_id: str) -> Optional[FusionResult]:
 
 
 @app.get("/v1/patients/{subject_id}/risk", tags=["egress"])
-def patient_risk(subject_id: str, db: Session = Depends(get_session)):
+def patient_risk(
+    subject_id: str,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
     """Steps 32-33. PATIENT view: composite, band, updated_at. Nothing else.
 
     Deliberately withholds per-modality scores, weights and any clinical note
     content. A patient seeing "your clinical notes score is 0.81" without a
     clinician present is a harm, not transparency.
     """
+    _require_subject_access(db, principal, subject_id)
     _require_subject(db, subject_id)
     row = _latest_fusion(db, subject_id)
     assessment = _assessment_for_row(row)
@@ -1005,7 +1010,7 @@ def patient_risk(subject_id: str, db: Session = Depends(get_session)):
                 "message": "no assessment yet", "updated_at": None,
                 "assessment_status": assessment["status"],
                 "missing_modalities": assessment["missing_modalities"]}
-    _audit(db, subject_id, "egress.patient", None)
+    _audit(db, subject_id, "egress.patient", None, principal.actor_id)
     db.commit()
     return {"subject_id": subject_id,
             "composite": row.composite, "band": row.band,
@@ -1061,7 +1066,7 @@ def doctor_timeline(
                          .order_by(FusionResult.computed_at.desc())
                          .limit(limit)).all()
 
-    _audit(db, subject_id, "egress.clinician", None)
+    _audit(db, subject_id, "egress.clinician", None, clinician.clinician_id)
     db.commit()
 
     return {
@@ -1133,7 +1138,8 @@ def doctor_evidence(
            {"available": result.available, "abstained": result.abstained,
             "safety_level": result.safety_level,
             "local_crisis_bypass": result.local_crisis_bypass,
-            "error": result.error})
+            "error": result.error},
+           clinician.clinician_id)
     db.commit()
 
     return {"subject_id": subject_id, **result.to_wire()}
@@ -1217,7 +1223,8 @@ def doctor_explanation(
         _CAREX_THRESHOLDS, _CAREX_REFERENCE_STATUS, _CAREX_BASE_WEIGHTS)
 
     _audit(db, subject_id, "egress.explanation",
-           {"fusion_result_id": latest.id, "explainer": carex.EXPLAINER_VERSION})
+           {"fusion_result_id": latest.id, "explainer": carex.EXPLAINER_VERSION},
+           clinician.clinician_id)
     db.commit()
 
     explanation["subject_id"] = subject_id
@@ -1249,6 +1256,7 @@ def global_evidence(
             "local_crisis_bypass": getattr(result, "local_crisis_bypass", False),
             "error": result.error,
         },
+        clinician.clinician_id,
     )
     db.commit()
 
