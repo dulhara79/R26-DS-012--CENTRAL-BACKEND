@@ -36,6 +36,8 @@ jobs:
           test ! -d fusion_service
           ! grep -R -nE '^[[:space:]]*(from[[:space:]]+(fusion|harmonise)[[:space:]]|import[[:space:]]+(fusion|harmonise)([[:space:]]|$))' central_backend --include='*.py'
           ! grep -R -n "FUSION_SERVICE_DIR" central_backend --include='*.py'
+          ! grep -n "BACKEND_API_TOKEN" central_backend/main.py
+          ! grep -n "BACKEND_API_TOKEN" central_backend/env.example.txt
 
       - name: Run Central Backend validation with deterministic service stubs
         working-directory: central_backend
