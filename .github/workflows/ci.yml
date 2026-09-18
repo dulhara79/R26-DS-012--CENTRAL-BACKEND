@@ -55,6 +55,10 @@ jobs:
         working-directory: central_backend
         run: python test_phase2_assessment.py
 
+      - name: Validate Phase 3 forecast contract
+        working-directory: central_backend
+        run: python test_phase3_forecast.py
+
       - name: Import application
         working-directory: central_backend
         run: python -c "from main import app; print(app.title)"
