@@ -1,5 +1,4 @@
 import os, sys, datetime as dt
-os.environ.setdefault("BACKEND_API_TOKEN", "")
 os.environ.setdefault("MRN_PEPPER", "seed")
 
 from db_models import Subject, ModalityReading

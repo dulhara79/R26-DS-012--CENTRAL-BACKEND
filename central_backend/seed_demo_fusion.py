@@ -36,7 +36,6 @@ import sys, os, datetime as dt
 if not os.path.exists("main.py"):
     sys.exit("Run this from the central_backend folder (no main.py here).")
 
-os.environ.setdefault("BACKEND_API_TOKEN", "")
 os.environ.setdefault("MRN_PEPPER", "seed")
 
 from db_models import Subject, SubjectAlias, ModalityReading   # noqa: E402

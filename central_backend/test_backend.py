@@ -23,16 +23,63 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_tmpdb.name}"
 os.environ["MRN_PEPPER"] = "test-pepper-not-for-production"
 os.environ["FUSION_URL"] = "https://fusion.test.invalid"
 os.environ["FUSION_API_TOKEN"] = "test-fusion-token"
+os.environ["AUTH_JWT_ISSUER"] = "https://auth.test"
+os.environ["AUTH_JWT_AUDIENCE"] = "r26ds012-central-backend"
+os.environ["AUTH_JWT_ALGORITHMS"] = "HS256"
+os.environ["AUTH_JWT_SECRET"] = "test-only-phase1-secret-not-for-production"
 
+import jwt  # noqa: E402
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import fusion_client  # noqa: E402
 import identity  # noqa: E402
 import modality_clients as mc  # noqa: E402
+from db_models import Clinician, SessionLocal  # noqa: E402
 from main import app  # noqa: E402
 
-client = TestClient(app)
+_now = dt.datetime.now(dt.timezone.utc)
+_clinician_token = jwt.encode(
+    {
+        "sub": "auth-sub-dr-test",
+        "clinician_id": "DR_TEST",
+        "role": "clinician",
+        "principal_type": "clinician",
+        "iss": os.environ["AUTH_JWT_ISSUER"],
+        "aud": os.environ["AUTH_JWT_AUDIENCE"],
+        "exp": _now + dt.timedelta(hours=1),
+    },
+    os.environ["AUTH_JWT_SECRET"],
+    algorithm="HS256",
+)
+_admin_token = jwt.encode(
+    {
+        "sub": "auth-sub-admin-test",
+        "role": "admin",
+        "principal_type": "admin",
+        "iss": os.environ["AUTH_JWT_ISSUER"],
+        "aud": os.environ["AUTH_JWT_AUDIENCE"],
+        "exp": _now + dt.timedelta(hours=1),
+    },
+    os.environ["AUTH_JWT_SECRET"],
+    algorithm="HS256",
+)
+_admin_headers = {"Authorization": f"Bearer {_admin_token}"}
+_seed_db = SessionLocal()
+try:
+    if _seed_db.get(Clinician, "DR_TEST") is None:
+        _seed_db.add(Clinician(
+            clinician_id="DR_TEST",
+            auth_subject="auth-sub-dr-test",
+            display_name="Dr Test",
+            role="clinician",
+            status="active",
+        ))
+        _seed_db.commit()
+finally:
+    _seed_db.close()
+
+client = TestClient(app, headers={"Authorization": f"Bearer {_clinician_token}"})
 
 passed, failed = 0, 0
 
@@ -231,14 +278,26 @@ check("repeated self-enrolment reuses subject",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 
 r = client.get("/v1/subjects/resolve", params={"app_user_id": self_id})
-check("self-enrolled patient resolves by app_user_id",
+check("unassigned clinician cannot resolve self-enrolled patient",
+      r.status_code == 403, r.text)
+
+r = client.post(
+    "/v1/admin/assignments",
+    json={"clinician_id": "DR_TEST", "subject_id": P_SELF, "active": True},
+    headers=_admin_headers,
+)
+check("admin can assign self-enrolled patient to clinician",
+      r.status_code == 200 and r.json().get("active") is True, r.text)
+
+r = client.get("/v1/subjects/resolve", params={"app_user_id": self_id})
+check("assigned self-enrolled patient resolves by app_user_id",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 r = client.get("/v1/subjects/resolve", params={"mrn": self_id})
-check("doctor QR lookup resolves the self-enrolled patient",
+check("assigned doctor QR lookup resolves self-enrolled patient",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 
-r = client.post("/v1/subjects", json={"mrn": self_id, "enrolled_by": "dr.perera"})
-check("doctor enrolment reuses the self-enrolled subject",
+r = client.post("/v1/subjects", json={"mrn": self_id, "enrolled_by": "ignored-client-value"})
+check("doctor enrolment reuses assigned self-enrolled subject",
       r.status_code == 200 and r.json().get("subject_id") == P_SELF, r.text)
 
 doctor_first_id = "P_FEDCBA0987654321"
@@ -541,8 +600,8 @@ check("egress audited", any(k.startswith("egress.") for k in kinds))
 
 # ═════════════════════════════════════════════════════════════════════════════
 section("13 · Rejections and edge cases")
-check("unknown subject 404",
-      client.post("/v1/fusion/run", json={"subject_id": "does-not-exist"}).status_code == 404)
+check("unknown/unassigned subject is disclosure-safe 403",
+      client.post("/v1/fusion/run", json={"subject_id": "does-not-exist"}).status_code == 403)
 check("unknown pairing code 404",
       client.post("/v1/subjects/pair",
                   json={"pairing_code": "ZZZZ-ZZZZ", "app_user_id": "x"}).status_code == 404)
@@ -786,9 +845,9 @@ check("no answer fabricated on abstention", r.get("answer") is None)
 # (e) endpoint rejects an empty question rather than calling the RAG with nothing
 check("empty question rejected",
       client.post(f"/v1/doctor/patients/{P1}/evidence", json={"question": ""}).status_code == 422)
-check("unknown subject 404 on evidence endpoint",
+check("unknown/unassigned subject is disclosure-safe 403 on evidence endpoint",
       client.post("/v1/doctor/patients/does-not-exist/evidence",
-                  json={"question": "x"}).status_code == 404)
+                  json={"question": "x"}).status_code == 403)
 
 # (f) health endpoint reports RAG configuration without raising
 h = client.get("/health").json()
@@ -895,11 +954,30 @@ def _capture_c1_call(user_id, window=None, client=None):
 
 main.mc.call_c1 = _capture_c1_call
 _c1_participant = "P_ABCDEF0123456789"
-client.post("/v1/subjects/self", json={"app_user_id": _c1_participant})
-_c1_ingest = client.post("/v1/ingest/physiological", json={
-    "app_user_id": _c1_participant,
-    "features": {"mean_hr": 99.0, "sdnn": 0.0, "rmssd": 0.0},
-})
+_c1_subject = client.post(
+    "/v1/subjects/self", json={"app_user_id": _c1_participant}
+).json()["subject_id"]
+_c1_patient_token = jwt.encode(
+    {
+        "sub": "auth-sub-c1-patient",
+        "subject_id": _c1_subject,
+        "role": "patient",
+        "principal_type": "patient",
+        "iss": os.environ["AUTH_JWT_ISSUER"],
+        "aud": os.environ["AUTH_JWT_AUDIENCE"],
+        "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1),
+    },
+    os.environ["AUTH_JWT_SECRET"],
+    algorithm="HS256",
+)
+_c1_ingest = client.post(
+    "/v1/ingest/physiological",
+    json={
+        "app_user_id": _c1_participant,
+        "features": {"mean_hr": 99.0, "sdnn": 0.0, "rmssd": 0.0},
+    },
+    headers={"Authorization": f"Bearer {_c1_patient_token}"},
+)
 main.mc.call_c1 = _original_c1_call
 check("central physiological ingest accepts the patient notification",
       _c1_ingest.status_code == 200, _c1_ingest.text)

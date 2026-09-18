@@ -31,7 +31,7 @@ import datetime as dt
 import os
 from typing import Optional
 
-from sqlalchemy import (JSON, DateTime, Float, ForeignKey, Index, Integer,
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer,
                         String, UniqueConstraint, create_engine, Text)
 from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship,
                             sessionmaker)
@@ -99,6 +99,47 @@ class SubjectAlias(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     subject: Mapped[Subject] = relationship(back_populates="aliases")
+
+
+class Clinician(Base):
+    """Authorized clinician/research clinician principal.
+
+    auth_subject binds the row to the verified JWT 'sub'. A valid JWT alone is
+    insufficient: the clinician must also exist here and be active.
+    """
+    __tablename__ = "clinicians"
+    __table_args__ = (
+        UniqueConstraint("auth_subject", name="uq_clinician_auth_subject"),
+        Index("ix_clinician_status", "status"),
+    )
+
+    clinician_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    auth_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128))
+    role: Mapped[str] = mapped_column(String(32), default="clinician")
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ClinicianSubjectAssignment(Base):
+    """Server-owned authorization edge between one clinician and one subject."""
+    __tablename__ = "clinician_subject_assignments"
+    __table_args__ = (
+        UniqueConstraint("clinician_id", "subject_id", name="uq_clinician_subject_assignment"),
+        Index("ix_assignment_clinician_active", "clinician_id", "active"),
+        Index("ix_assignment_subject_active", "subject_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clinician_id: Mapped[str] = mapped_column(
+        ForeignKey("clinicians.clinician_id"), index=True)
+    subject_id: Mapped[str] = mapped_column(
+        ForeignKey("subjects.subject_id"), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    assigned_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class PairingCode(Base):
