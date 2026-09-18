@@ -74,10 +74,15 @@ contract checks are required before a research demo or release.
 
 The Central-Backend-only prerequisite was merged in PR #3.
 
-Phase 0 contract-lock implementation lives in `docs/PHASE0_CONTRACT_LOCK.md`,
-`central_backend/schemas/phase0_v1.py`, and versioned JSON fixtures. Phase 0
-freezes TARGET semantics; it deliberately does not implement later-phase runtime
-features.
+Phase 0 contract-lock implementation is merged and documented in
+`docs/PHASE0_CONTRACT_LOCK.md`.
+
+Phase 1 authentication/assignment implementation is documented in
+`docs/PHASE1_AUTH_ASSIGNMENTS.md`. It uses configurable fail-closed JWT
+verification, server-owned clinician identity/assignments, patient subject
+binding and assignment-scoped clinician access. Production JWT issuer/audience/
+algorithm/key values must come from the approved auth service; they are not
+invented in this repository.
 
 Roadmap:
 
