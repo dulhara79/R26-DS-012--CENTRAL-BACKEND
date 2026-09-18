@@ -51,9 +51,25 @@ jobs:
         working-directory: central_backend
         run: python test_phase1_auth.py
 
+      - name: Validate Phase 2 canonical assessment
+        working-directory: central_backend
+        run: python test_phase2_assessment.py
+
       - name: Import application
         working-directory: central_backend
         run: python -c "from main import app; print(app.title)"
+
+      - name: Smoke application startup
+        working-directory: central_backend
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from main import app
+          with TestClient(app) as client:
+              response = client.get("/")
+              assert response.status_code == 200, response.text
+              print(response.json()["service"])
+          PY
 
       - name: Record pinned source provenance
         run: |

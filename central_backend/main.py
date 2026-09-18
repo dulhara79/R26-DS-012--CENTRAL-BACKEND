@@ -13,13 +13,14 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import access_control
+import assessment_service
 import auth
 import conformal
 import fusion_client
@@ -30,7 +31,7 @@ import rag_client
 from db_models import (AuditLog, Clinician, ClinicianSubjectAssignment, FusionResult,
                        ModalityReading, PairingCode, Subject, SubjectAlias, Verdict,
                        get_session, init_db, utcnow, SupportBankNote, SessionLocal)
-from schemas.phase0_v1 import PrincipalType
+from schemas.phase0_v1 import AssessmentSummary, PrincipalType
 
 ALL_MODALITIES = ["c1_physiological", "c2_behavioral", "c3_clinical_nlp", "c4_demographic"]
 FUSION_REQUIRED_MODALITIES = ("c1_physiological", "c3_clinical_nlp", "c4_demographic")
@@ -991,6 +992,107 @@ def _latest_fusion(db: Session, subject_id: str) -> Optional[FusionResult]:
                      .where(FusionResult.subject_id == subject_id)
                      .order_by(FusionResult.computed_at.desc(), FusionResult.id.desc())
                      .limit(1))
+
+
+def _safe_assessment_projection(
+    db: Session,
+    row: FusionResult,
+    *,
+    audience: str,
+) -> AssessmentSummary:
+    """Fail closed if persisted state cannot satisfy the frozen Phase-0 contract."""
+    try:
+        return assessment_service.build_assessment(db, row, audience=audience)
+    except assessment_service.AssessmentProjectionError as exc:
+        # Do not leak stored clinical/model internals in a client-facing error.
+        raise HTTPException(
+            status_code=500,
+            detail="persisted assessment cannot be projected safely",
+        ) from exc
+
+
+@app.get(
+    "/v1/patients/{subject_id}/assessment/latest",
+    response_model=AssessmentSummary,
+    tags=["egress"],
+)
+def patient_assessment_latest(
+    subject_id: str,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    """Canonical latest assessment for either authorized audience.
+
+    The current score/tier is read from one persisted authoritative FusionResult.
+    Patient and clinician calls therefore share the same fusion_result_id. The
+    patient projection deliberately withholds clinician-only modality detail.
+    """
+    _require_subject_access(db, principal, subject_id)
+    _require_subject(db, subject_id)
+
+    row = assessment_service.latest_fusion_row(db, subject_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="assessment unavailable: no persisted fusion result",
+        )
+
+    audience = (
+        "clinician"
+        if principal.principal_type == PrincipalType.CLINICIAN
+        else "patient"
+    )
+    summary = _safe_assessment_projection(db, row, audience=audience)
+    _audit(
+        db,
+        subject_id,
+        "egress.assessment.latest",
+        {"fusion_result_id": row.id, "audience": audience},
+        principal.actor_id,
+    )
+    db.commit()
+    return summary
+
+
+@app.get(
+    "/v1/patients/{subject_id}/assessments",
+    response_model=List[AssessmentSummary],
+    tags=["egress"],
+)
+def patient_assessment_history(
+    subject_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    """Clinician-only persisted FusionResult history.
+
+    Each item is the same frozen AssessmentSummary schema. Historical reads
+    never invoke Fusion or component services and never mutate old results.
+    Phase 3 will populate forecast when a persisted ForecastResult exists.
+    """
+    clinician = _require_clinician(db, principal)
+    _require_clinician_subject(db, principal, subject_id)
+    _require_subject(db, subject_id)
+
+    rows = assessment_service.fusion_history_rows(db, subject_id, limit=limit)
+    try:
+        history = assessment_service.build_history(db, rows)
+    except assessment_service.AssessmentProjectionError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="persisted assessment history cannot be projected safely",
+        ) from exc
+
+    _audit(
+        db,
+        subject_id,
+        "egress.assessment.history",
+        {"fusion_result_ids": [row.id for row in rows], "limit": limit},
+        clinician.clinician_id,
+    )
+    db.commit()
+    return history
 
 
 @app.get("/v1/patients/{subject_id}/risk", tags=["egress"])
