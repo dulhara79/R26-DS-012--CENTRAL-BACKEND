@@ -201,6 +201,43 @@ class FusionResult(Base):
     computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ForecastResult(Base):
+    """One append-only near-term forecast, separate from current FusionResult.
+
+    Phase 3 stores the C1-led physiological forecast with exact source-reading
+    provenance. It is not a multimodal forecast and it does not contain the
+    Phase-4 attention-event policy.
+    """
+    __tablename__ = "forecast_results"
+    __table_args__ = (
+        Index("ix_forecast_subject_generated", "subject_id", "generated_at"),
+        Index("ix_forecast_fusion", "fusion_result_id", "generated_at"),
+        UniqueConstraint(
+            "source_component",
+            "source_reading_id",
+            "horizon_minutes",
+            name="uq_forecast_source_horizon",
+        ),
+    )
+
+    forecast_result_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.subject_id"), index=True)
+    fusion_result_id: Mapped[int] = mapped_column(ForeignKey("fusion_results.id"), index=True)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    horizon_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    score: Mapped[Optional[float]] = mapped_column(Float)
+    tier: Mapped[Optional[str]] = mapped_column(String(16))
+    escalation_probability: Mapped[Optional[float]] = mapped_column(Float)
+    escalation_predicted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_until: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_component: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_reading_id: Mapped[int] = mapped_column(
+        ForeignKey("modality_readings.id"), index=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Verdict(Base):
     """The clinician's HITL tier judgement for one fusion result.
 
