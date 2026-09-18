@@ -83,7 +83,7 @@ def headers(token: str) -> dict[str, str]:
 
 subject_id = str(uuid.uuid4())
 other_subject_id = str(uuid.uuid4())
-base_time = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(minutes=2)
+base_time = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(minutes=4)
 
 with SessionLocal() as db:
     db.add_all([
@@ -464,7 +464,11 @@ check(
     f"{r4.text} | {r5.text}",
 )
 second_event_id = r5.json().get("attention_event_id")
-check("second episode receives a different event id", second_event_id != first_event_id)
+check(
+    "second episode receives a different event id",
+    bool(second_event_id) and second_event_id != first_event_id,
+    str(second_event_id),
+)
 
 with SessionLocal() as db:
     events = list(db.scalars(
