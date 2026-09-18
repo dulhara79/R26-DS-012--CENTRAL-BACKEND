@@ -72,8 +72,14 @@ contract checks are required before a research demo or release.
 
 ## Handbook roadmap
 
-After this corrected Central-Backend-only baseline is reviewed, continue in the
-handbook order:
+The Central-Backend-only prerequisite was merged in PR #3.
+
+Phase 0 contract-lock implementation lives in `docs/PHASE0_CONTRACT_LOCK.md`,
+`central_backend/schemas/phase0_v1.py`, and versioned JSON fixtures. Phase 0
+freezes TARGET semantics; it deliberately does not implement later-phase runtime
+features.
+
+Roadmap:
 
 1. Phase 0 - contract lock
 2. Phase 1 - backend authentication + assignments
