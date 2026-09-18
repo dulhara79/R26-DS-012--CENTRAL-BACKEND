@@ -19,16 +19,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import access_control
+import auth
 import conformal
 import fusion_client
 import gate
 import identity
 import modality_clients as mc
 import rag_client
-from db_models import (AuditLog, FusionResult, ModalityReading, PairingCode,
-                       Subject, SubjectAlias, Verdict, get_session, init_db, utcnow, SupportBankNote, SessionLocal)
+from db_models import (AuditLog, Clinician, ClinicianSubjectAssignment, FusionResult,
+                       ModalityReading, PairingCode, Subject, SubjectAlias, Verdict,
+                       get_session, init_db, utcnow, SupportBankNote, SessionLocal)
+from schemas.phase0_v1 import PrincipalType
 
-API_TOKEN = os.getenv("BACKEND_API_TOKEN", "")
 ALL_MODALITIES = ["c1_physiological", "c2_behavioral", "c3_clinical_nlp", "c4_demographic"]
 FUSION_REQUIRED_MODALITIES = ("c1_physiological", "c3_clinical_nlp", "c4_demographic")
 
@@ -82,9 +85,186 @@ finally:
 def root():
     return {"service": "R26-DS-012 Central Backend", "status": "running", "docs": "/docs"}
 
-def _auth(authorization: Optional[str]):
-    if API_TOKEN and authorization != f"Bearer {API_TOKEN}":
-        raise HTTPException(401, "invalid or missing bearer token")
+
+class ClinicianProvisionRequest(BaseModel):
+    clinician_id: str = Field(..., min_length=1, max_length=64)
+    auth_subject: str = Field(..., min_length=1, max_length=255)
+    display_name: str = Field(..., min_length=1, max_length=128)
+    role: str = Field(default="clinician", min_length=1, max_length=32)
+    status: str = Field(default="active", pattern=r"^(active|inactive)$")
+
+
+class AssignmentProvisionRequest(BaseModel):
+    clinician_id: str = Field(..., min_length=1, max_length=64)
+    subject_id: str = Field(..., min_length=1, max_length=36)
+    active: bool = True
+
+
+@app.get("/v1/me", tags=["auth"])
+def me(
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    if principal.principal_type == PrincipalType.CLINICIAN:
+        clinician = access_control.require_active_clinician(db, principal)
+        return {
+            "principal_type": "clinician",
+            "principal_id": principal.principal_id,
+            "clinician_id": clinician.clinician_id,
+            "display_name": clinician.display_name,
+            "role": clinician.role,
+            "status": clinician.status,
+            "expires_at": principal.expires_at,
+        }
+    if principal.principal_type == PrincipalType.PATIENT:
+        subject = access_control.require_patient_subject(db, principal, principal.subject_id or "")
+        return {
+            "principal_type": "patient",
+            "principal_id": principal.principal_id,
+            "subject_id": subject.subject_id,
+            "role": principal.role,
+            "expires_at": principal.expires_at,
+        }
+    if principal.principal_type in {PrincipalType.ADMIN, PrincipalType.RESEARCHER}:
+        return {
+            "principal_type": principal.principal_type.value,
+            "principal_id": principal.principal_id,
+            "role": principal.role,
+            "expires_at": principal.expires_at,
+        }
+    raise HTTPException(status_code=403, detail="unsupported principal")
+
+
+@app.post("/v1/admin/clinicians", tags=["auth"])
+def provision_clinician(
+    req: ClinicianProvisionRequest,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    access_control.require_privileged_operator(principal)
+    existing_auth = db.scalar(select(Clinician).where(Clinician.auth_subject == req.auth_subject))
+    if existing_auth and existing_auth.clinician_id != req.clinician_id:
+        raise HTTPException(status_code=409, detail="auth_subject is already bound to another clinician")
+
+    row = db.get(Clinician, req.clinician_id)
+    if row is None:
+        row = Clinician(
+            clinician_id=req.clinician_id,
+            auth_subject=req.auth_subject,
+            display_name=req.display_name,
+            role=req.role,
+            status=req.status,
+        )
+        db.add(row)
+        event = "clinician.created"
+    else:
+        row.auth_subject = req.auth_subject
+        row.display_name = req.display_name
+        row.role = req.role
+        row.status = req.status
+        event = "clinician.updated"
+
+    _audit(db, None, event, {"clinician_id": row.clinician_id}, principal.actor_id)
+    db.commit()
+    return {
+        "clinician_id": row.clinician_id,
+        "display_name": row.display_name,
+        "role": row.role,
+        "status": row.status,
+    }
+
+
+@app.post("/v1/admin/assignments", tags=["auth"])
+def provision_assignment(
+    req: AssignmentProvisionRequest,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    access_control.require_privileged_operator(principal)
+    clinician = db.get(Clinician, req.clinician_id)
+    if clinician is None:
+        raise HTTPException(status_code=404, detail="clinician not found")
+    subject = db.get(Subject, req.subject_id)
+    if subject is None:
+        raise HTTPException(status_code=404, detail="subject not found")
+
+    row = db.scalar(select(ClinicianSubjectAssignment).where(
+        ClinicianSubjectAssignment.clinician_id == req.clinician_id,
+        ClinicianSubjectAssignment.subject_id == req.subject_id,
+    ))
+    if row is None:
+        row = ClinicianSubjectAssignment(
+            clinician_id=req.clinician_id,
+            subject_id=req.subject_id,
+            active=req.active,
+            ended_at=None if req.active else utcnow(),
+        )
+        db.add(row)
+    else:
+        row.active = req.active
+        row.ended_at = None if req.active else utcnow()
+        if req.active:
+            row.assigned_at = utcnow()
+
+    _audit(
+        db, req.subject_id,
+        "assignment.activated" if req.active else "assignment.ended",
+        {"clinician_id": req.clinician_id},
+        principal.actor_id,
+    )
+    db.commit()
+    return {
+        "clinician_id": row.clinician_id,
+        "subject_id": row.subject_id,
+        "active": row.active,
+        "assigned_at": row.assigned_at,
+        "ended_at": row.ended_at,
+    }
+
+
+@app.get("/v1/clinicians/me/patients", tags=["auth"])
+def assigned_patients(
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    clinician = access_control.require_active_clinician(db, principal)
+    rows = db.scalars(
+        select(ClinicianSubjectAssignment)
+        .where(
+            ClinicianSubjectAssignment.clinician_id == clinician.clinician_id,
+            ClinicianSubjectAssignment.active.is_(True),
+        )
+        .order_by(ClinicianSubjectAssignment.assigned_at.asc())
+    ).all()
+    return {
+        "clinician_id": clinician.clinician_id,
+        "patients": [
+            {
+                "subject_id": row.subject_id,
+                "assigned_at": row.assigned_at,
+            }
+            for row in rows
+        ],
+    }
+
+def _require_clinician(db: Session, principal: auth.VerifiedPrincipal) -> Clinician:
+    return access_control.require_active_clinician(db, principal)
+
+
+def _require_clinician_subject(
+    db: Session,
+    principal: auth.VerifiedPrincipal,
+    subject_id: str,
+) -> ClinicianSubjectAssignment:
+    return access_control.require_clinician_assignment(db, principal, subject_id)
+
+
+def _require_subject_access(
+    db: Session,
+    principal: auth.VerifiedPrincipal,
+    subject_id: str,
+) -> None:
+    access_control.require_subject_access(db, principal, subject_id)
 
 
 def _audit(db: Session, subject_id: Optional[str], event: str,
