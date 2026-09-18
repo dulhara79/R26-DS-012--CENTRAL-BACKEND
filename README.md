@@ -11,6 +11,14 @@ short_description: Orchestrator for the R26-DS-012 multimodal anxiety framework
 
 # R26-DS-012 — Central Backend
 
+> **Phase 0 integration status (2026-09-18):** the executable backend below is a
+> legacy runtime baseline that predates the September integration handbook. The
+> frozen TARGET contract is now defined in `docs/contracts/PHASE0_CONTRACT_LOCK.md`
+> and `app/contracts/v1.py`. Do not treat the legacy C3/C4 naming, direct
+> clinician ownership model, local fusion fallback, or legacy route family as
+> the final target architecture.
+
+
 The missing middle layer. Both Flutter apps talk to this and nothing else; this
 talks to the five model services.
 
