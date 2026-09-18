@@ -60,6 +60,10 @@ enforce the external service boundary. In particular:
 - central_backend/env.example.txt no longer configures an in-process Fusion path;
 - central_backend/test_backend.py uses a deterministic test stub instead of
   importing Fusion scientific code;
+- central_backend/explain.py no longer imports Fusion thresholds/base weights;
+  when authoritative values are not supplied, CARE-X explicitly marks its
+  existing fallback thresholds non-authoritative and omits unavailable
+  base-weight scarcity calculations;
 - root Docker/CI/readme files package and verify the Central Backend only.
 
 All other central_backend baseline files remain pinned-source copies unless a
