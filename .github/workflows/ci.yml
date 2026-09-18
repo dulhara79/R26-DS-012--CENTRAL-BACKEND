@@ -59,6 +59,10 @@ jobs:
         working-directory: central_backend
         run: python test_phase3_forecast.py
 
+      - name: Validate Phase 4 attention engine
+        working-directory: central_backend
+        run: python test_phase4_attention.py
+
       - name: Import application
         working-directory: central_backend
         run: python -c "from main import app; print(app.title)"

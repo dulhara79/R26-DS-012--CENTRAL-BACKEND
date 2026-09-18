@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 import access_control
 import assessment_service
+import attention_engine
 import auth
 import conformal
 import fusion_client
@@ -29,10 +30,14 @@ import gate
 import identity
 import modality_clients as mc
 import rag_client
-from db_models import (AuditLog, Clinician, ClinicianSubjectAssignment, ForecastResult,
-                       FusionResult, ModalityReading, PairingCode, Subject, SubjectAlias,
-                       Verdict, get_session, init_db, utcnow, SupportBankNote, SessionLocal)
-from schemas.phase0_v1 import AssessmentSummary, PrincipalType
+from db_models import (AttentionEventRecord, AuditLog, Clinician,
+                       ClinicianSubjectAssignment, ForecastResult, FusionResult,
+                       ModalityReading, PairingCode, Subject, SubjectAlias, Verdict,
+                       get_session, init_db, utcnow, SupportBankNote, SessionLocal)
+from schemas.phase0_v1 import (AcknowledgeAttentionEventRequest, AssessmentSummary,
+                               AttentionEventListResponse, AttentionEventResponse,
+                               AttentionEventStatus, PrincipalType,
+                               ResolveAttentionEventRequest)
 
 ALL_MODALITIES = ["c1_physiological", "c2_behavioral", "c3_clinical_nlp", "c4_demographic"]
 FUSION_REQUIRED_MODALITIES = ("c1_physiological", "c3_clinical_nlp", "c4_demographic")
@@ -680,6 +685,7 @@ def ingest_physiological(
         reading=row,
         fusion_row=latest_fusion,
     )
+    attention_evaluation = None
     if forecast_row is not None:
         _audit(
             db,
@@ -694,6 +700,40 @@ def ingest_physiological(
             },
             principal.actor_id,
         )
+        # Commit the immutable forecast snapshot before entering the durable
+        # episode engine. This keeps any first-state concurrency retry isolated
+        # from the scientific forecast persistence transaction.
+        db.commit()
+
+        attention_evaluation = attention_engine.evaluate_forecast(
+            db,
+            forecast_row,
+        )
+        if attention_evaluation.event is not None and attention_evaluation.action == "event_created":
+            _audit(
+                db,
+                subject_id,
+                "attention.created",
+                {
+                    "event_id": attention_evaluation.event.id,
+                    "forecast_result_id": forecast_row.forecast_result_id,
+                    "fusion_result_id": forecast_row.fusion_result_id,
+                    "policy_version": attention_evaluation.event.policy_version,
+                    "severity": attention_evaluation.event.severity,
+                },
+                "server:attention-engine",
+            )
+        elif attention_evaluation.action == "recovered":
+            _audit(
+                db,
+                subject_id,
+                "attention.recovered",
+                {
+                    "forecast_result_id": forecast_row.forecast_result_id,
+                    "policy_version": attention_engine.POLICY_VERSION,
+                },
+                "server:attention-engine",
+            )
         db.commit()
 
     return {
@@ -704,6 +744,14 @@ def ingest_physiological(
         "note": result.note,
         "forecast_result_id": (
             forecast_row.forecast_result_id if forecast_row is not None else None
+        ),
+        "attention_event_id": (
+            attention_evaluation.event.id
+            if attention_evaluation is not None and attention_evaluation.event is not None
+            else None
+        ),
+        "attention_policy_action": (
+            attention_evaluation.action if attention_evaluation is not None else None
         ),
         **fusion_info,
     }
@@ -1131,6 +1179,187 @@ def patient_assessment_history(
     return history
 
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ATTENTION EVENTS — Handbook Phase 4
+# ═════════════════════════════════════════════════════════════════════════════
+def _attention_row_for_clinician(
+    db: Session,
+    principal: auth.VerifiedPrincipal,
+    event_id: str,
+) -> tuple[Clinician, AttentionEventRecord]:
+    clinician = _require_clinician(db, principal)
+    row = db.get(AttentionEventRecord, event_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="attention event not found")
+    _require_clinician_subject(db, principal, row.subject_id)
+    return clinician, row
+
+
+@app.get(
+    "/v1/attention-events",
+    response_model=AttentionEventListResponse,
+    tags=["attention"],
+)
+def attention_events(
+    status: Optional[AttentionEventStatus] = Query(default=None),
+    severity: Optional[str] = Query(default=None, min_length=1, max_length=24),
+    subject_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    """Assignment-scoped persistent attention-event inbox/history."""
+    clinician = _require_clinician(db, principal)
+
+    stmt = (
+        select(AttentionEventRecord)
+        .join(
+            ClinicianSubjectAssignment,
+            ClinicianSubjectAssignment.subject_id == AttentionEventRecord.subject_id,
+        )
+        .where(
+            ClinicianSubjectAssignment.clinician_id == clinician.clinician_id,
+            ClinicianSubjectAssignment.active.is_(True),
+        )
+    )
+    if status is not None:
+        stmt = stmt.where(AttentionEventRecord.status == status.value)
+    if severity is not None:
+        stmt = stmt.where(AttentionEventRecord.severity == severity)
+    if subject_id is not None:
+        # Explicit subject filters still pass through assignment authorization;
+        # guessed IDs do not widen the joined worklist.
+        _require_clinician_subject(db, principal, subject_id)
+        stmt = stmt.where(AttentionEventRecord.subject_id == subject_id)
+
+    rows = list(
+        db.scalars(
+            stmt.order_by(
+                AttentionEventRecord.created_at.desc(),
+                AttentionEventRecord.id.desc(),
+            ).limit(limit)
+        ).all()
+    )
+    _audit(
+        db,
+        subject_id,
+        "attention.list",
+        {"status": status.value if status else None, "severity": severity, "count": len(rows)},
+        clinician.clinician_id,
+    )
+    db.commit()
+    return AttentionEventListResponse(
+        events=[attention_engine.to_contract(row) for row in rows]
+    )
+
+
+@app.get(
+    "/v1/attention-events/{event_id}",
+    response_model=AttentionEventResponse,
+    tags=["attention"],
+)
+def attention_event_detail(
+    event_id: str,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    clinician, row = _attention_row_for_clinician(db, principal, event_id)
+    _audit(
+        db,
+        row.subject_id,
+        "attention.read",
+        {
+            "event_id": row.id,
+            "fusion_result_id": row.fusion_result_id,
+            "forecast_result_id": row.forecast_result_id,
+        },
+        clinician.clinician_id,
+    )
+    db.commit()
+    return AttentionEventResponse(event=attention_engine.to_contract(row))
+
+
+@app.post(
+    "/v1/attention-events/{event_id}/acknowledge",
+    response_model=AttentionEventResponse,
+    tags=["attention"],
+)
+def acknowledge_attention_event(
+    event_id: str,
+    req: AcknowledgeAttentionEventRequest,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    """Atomic OPEN -> ACKNOWLEDGED. Actor/time come only from the verified JWT."""
+    clinician, before = _attention_row_for_clinician(db, principal, event_id)
+    previous_status = before.status
+    try:
+        row = attention_engine.acknowledge(
+            db,
+            event_id,
+            actor=clinician.clinician_id,
+        )
+    except attention_engine.InvalidEventTransition as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="attention event not found")
+
+    if previous_status == "OPEN" and row.status == "ACKNOWLEDGED":
+        _audit(
+            db,
+            row.subject_id,
+            "attention.acknowledged",
+            {"event_id": row.id},
+            clinician.clinician_id,
+        )
+    db.commit()
+    db.refresh(row)
+    return AttentionEventResponse(event=attention_engine.to_contract(row))
+
+
+@app.post(
+    "/v1/attention-events/{event_id}/resolve",
+    response_model=AttentionEventResponse,
+    tags=["attention"],
+)
+def resolve_attention_event(
+    event_id: str,
+    req: ResolveAttentionEventRequest,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
+    """Atomic ACKNOWLEDGED -> RESOLVED. Frozen Phase-0 body is exactly {}."""
+    clinician, before = _attention_row_for_clinician(db, principal, event_id)
+    previous_status = before.status
+    try:
+        row = attention_engine.resolve(
+            db,
+            event_id,
+            actor=clinician.clinician_id,
+        )
+    except attention_engine.InvalidEventTransition as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="attention event not found")
+
+    if previous_status == "ACKNOWLEDGED" and row.status == "RESOLVED":
+        _audit(
+            db,
+            row.subject_id,
+            "attention.resolved",
+            {"event_id": row.id},
+            clinician.clinician_id,
+        )
+    db.commit()
+    db.refresh(row)
+    return AttentionEventResponse(event=attention_engine.to_contract(row))
+
+
 @app.get("/v1/patients/{subject_id}/risk", tags=["egress"])
 def patient_risk(
     subject_id: str,
@@ -1417,6 +1646,11 @@ def health():
         "auth": {
             "end_user_jwt_configured": auth.auth_configured(),
             "authorization_model": "verified-principal + server-owned-assignment",
+        },
+        "attention": {
+            "policy_version": attention_engine.POLICY_VERSION,
+            "persistent_events": True,
+            "lifecycle": "OPEN -> ACKNOWLEDGED -> RESOLVED",
         },
         "gate": {"min_usable_modalities": gate.MIN_USABLE_MODALITIES,
                  "excluded": sorted(gate.EXCLUDED_MODALITIES),

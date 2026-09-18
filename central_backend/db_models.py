@@ -238,6 +238,60 @@ class ForecastResult(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AttentionEventRecord(Base):
+    """Persistent server-owned urgent-work item for one escalation episode."""
+    __tablename__ = "attention_events"
+    __table_args__ = (
+        Index("ix_attention_subject_created", "subject_id", "created_at"),
+        Index("ix_attention_status_created", "status", "created_at"),
+        UniqueConstraint("episode_key", name="uq_attention_episode_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.subject_id"), index=True)
+    fusion_result_id: Mapped[int] = mapped_column(ForeignKey("fusion_results.id"), index=True)
+    forecast_result_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("forecast_results.forecast_result_id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    forecast_horizon: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    acknowledged_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    acknowledged_by: Mapped[Optional[str]] = mapped_column(String(64))
+    resolved_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[Optional[str]] = mapped_column(String(64))
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Internal dedupe identity. It is deliberately not part of the frozen wire
+    # contract, but gives the database one immutable key per policy episode.
+    episode_key: Mapped[str] = mapped_column(String(160), nullable=False)
+
+
+class AttentionEpisodeState(Base):
+    """Durable confirmation/hysteresis state for the server attention policy."""
+    __tablename__ = "attention_episode_state"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "policy_version", name="uq_attention_episode_subject_policy"),
+        Index("ix_attention_episode_subject", "subject_id", "policy_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.subject_id"), index=True)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    confirmation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_confirmation_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    last_forecast_result_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("forecast_results.forecast_result_id"), nullable=True)
+    event_emitted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    episode_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    current_event_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("attention_events.id"), nullable=True)
+    recovered_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Verdict(Base):
     """The clinician's HITL tier judgement for one fusion result.
 
