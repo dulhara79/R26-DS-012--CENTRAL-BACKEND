@@ -312,15 +312,18 @@ class ExternalIdRequest(BaseModel):
 
 
 @app.post("/v1/subjects/{subject_id}/external-ids", tags=["enrolment"])
-def register_external_id(subject_id: str, req: ExternalIdRequest,
-                         db: Session = Depends(get_session),
-                         authorization: Optional[str] = Header(None)):
+def register_external_id(
+    subject_id: str,
+    req: ExternalIdRequest,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
     """Tell the backend what id a given component knows this patient by.
 
     Without this, the backend would ask C2 about a UUID that C2 has never heard
     of. Registering is idempotent: re-registering the same modality updates the
     mapping rather than creating a duplicate alias."""
-    _auth(authorization)
+    _require_clinician_subject(db, principal, subject_id)
     _require_subject(db, subject_id)
     alias_type = EXTERNAL_ID_TYPES.get(req.modality)
     if not alias_type:
@@ -426,15 +429,18 @@ def self_enrol_subject(req: SelfEnrolRequest, db: Session = Depends(get_session)
 
 
 @app.post("/v1/subjects", response_model=EnrolResponse, tags=["enrolment"])
-def enrol_subject(req: EnrolRequest, db: Session = Depends(get_session),
-                  authorization: Optional[str] = Header(None)):
+def enrol_subject(
+    req: EnrolRequest,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
     """Steps 2-4. Clinician enrols a patient by MRN.
 
     The MRN is HMAC-hashed on arrival and the raw value is never persisted.
     Re-enrolling the same MRN returns the existing subject with a fresh pairing
     code, rather than creating a duplicate patient.
     """
-    _auth(authorization)
+    clinician = _require_clinician(db, principal)
     try:
         mrn_hash = identity.hash_mrn(req.mrn)
     except identity.PepperNotConfigured as exc:
@@ -447,14 +453,24 @@ def enrol_subject(req: EnrolRequest, db: Session = Depends(get_session),
 
     if existing:
         subject_id = existing.subject_id
+        _require_clinician_subject(db, principal, subject_id)
         _audit(db, subject_id, "enrol.repeat", {"note": "existing MRN, new pairing code"},
-               req.enrolled_by)
+               clinician.clinician_id)
     else:
         subject_id = identity.new_subject_id()
-        db.add(Subject(subject_id=subject_id, enrolled_by=req.enrolled_by))
+        db.add(Subject(subject_id=subject_id, enrolled_by=clinician.clinician_id))
         db.add(SubjectAlias(subject_id=subject_id, alias_type="mrn_hash",
                             alias_value=mrn_hash))
-        _audit(db, subject_id, "enrol.created", {"alias": "mrn_hash"}, req.enrolled_by)
+        db.add(ClinicianSubjectAssignment(
+            clinician_id=clinician.clinician_id,
+            subject_id=subject_id,
+            active=True,
+        ))
+        _audit(db, subject_id, "enrol.created", {"alias": "mrn_hash"},
+               clinician.clinician_id)
+        _audit(db, subject_id, "assignment.activated",
+               {"clinician_id": clinician.clinician_id, "source": "enrolment"},
+               clinician.clinician_id)
 
     code = identity.new_pairing_code()
     expires = identity.pairing_expiry()
@@ -504,16 +520,24 @@ def pair_subject(req: PairRequest, db: Session = Depends(get_session)):
 
 
 @app.get("/v1/subjects/resolve", tags=["enrolment"])
-def resolve_subject(app_user_id: Optional[str] = None, mrn: Optional[str] = None,
-                    db: Session = Depends(get_session),
-                    authorization: Optional[str] = Header(None)):
+def resolve_subject(
+    app_user_id: Optional[str] = None,
+    mrn: Optional[str] = None,
+    db: Session = Depends(get_session),
+    principal: auth.VerifiedPrincipal = Depends(auth.current_principal),
+):
     """Look up a subject_id from either alias. The clinician app uses the MRN
     form; the patient app uses app_user_id."""
-    _auth(authorization)
     if app_user_id:
-        return {"subject_id": _resolve(db, "app_user_id", app_user_id)}
+        subject_id = _resolve(db, "app_user_id", app_user_id)
+        _require_subject_access(db, principal, subject_id)
+        return {"subject_id": subject_id}
     if mrn:
-        return {"subject_id": _resolve(db, "mrn_hash", identity.hash_mrn(mrn))}
+        if principal.principal_type != PrincipalType.CLINICIAN:
+            raise HTTPException(status_code=403, detail="clinician principal required")
+        subject_id = _resolve(db, "mrn_hash", identity.hash_mrn(mrn))
+        _require_clinician_subject(db, principal, subject_id)
+        return {"subject_id": subject_id}
     raise HTTPException(422, "supply app_user_id or mrn")
 
 
