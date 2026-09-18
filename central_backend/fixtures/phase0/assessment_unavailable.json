@@ -1,0 +1,38 @@
+{
+  "subject_id": "11111111-1111-4111-8111-111111111111",
+  "fusion_result_id": 124,
+  "current_assessment": {
+    "score": null,
+    "tier": null,
+    "band": "GREY"
+  },
+  "forecast": null,
+  "confidence": 0.0,
+  "assessment_status": "unavailable",
+  "modalities": [
+    {
+      "component_id": "c1_physiological",
+      "score": null,
+      "available": false,
+      "included_in_fusion": false,
+      "status": "poor_signal",
+      "confidence": null,
+      "coverage": null,
+      "captured_at": "2026-09-18T08:00:00Z",
+      "contribution": null
+    },
+    {
+      "component_id": "c2_behavioral",
+      "score": null,
+      "available": false,
+      "included_in_fusion": false,
+      "status": "not_validated",
+      "confidence": null,
+      "coverage": null,
+      "captured_at": null,
+      "contribution": null
+    }
+  ],
+  "computed_at": "2026-09-18T10:00:00Z",
+  "model_version": "gate-blocked"
+}
