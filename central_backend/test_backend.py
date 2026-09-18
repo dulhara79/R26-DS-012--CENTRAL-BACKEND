@@ -600,8 +600,8 @@ check("egress audited", any(k.startswith("egress.") for k in kinds))
 
 # ═════════════════════════════════════════════════════════════════════════════
 section("13 · Rejections and edge cases")
-check("unknown subject 404",
-      client.post("/v1/fusion/run", json={"subject_id": "does-not-exist"}).status_code == 404)
+check("unknown/unassigned subject is disclosure-safe 403",
+      client.post("/v1/fusion/run", json={"subject_id": "does-not-exist"}).status_code == 403)
 check("unknown pairing code 404",
       client.post("/v1/subjects/pair",
                   json={"pairing_code": "ZZZZ-ZZZZ", "app_user_id": "x"}).status_code == 404)
