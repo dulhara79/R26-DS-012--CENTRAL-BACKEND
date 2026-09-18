@@ -51,6 +51,10 @@ jobs:
         working-directory: central_backend
         run: python test_phase1_auth.py
 
+      - name: Validate Phase 2 canonical assessment
+        working-directory: central_backend
+        run: python test_phase2_assessment.py
+
       - name: Import application
         working-directory: central_backend
         run: python -c "from main import app; print(app.title)"
