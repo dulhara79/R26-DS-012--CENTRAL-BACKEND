@@ -1006,14 +1006,14 @@ def load_reference_status(reference_dir: Any = None) -> Dict[str, Any]:
     is worse than one missing a single caveat.
     """
     import json
-    import os
     from pathlib import Path
 
+    # Reference distributions belong to the external Fusion Service. The
+    # Central Backend does not discover them from a sibling source tree. An
+    # explicit directory may still be supplied by an offline validation caller;
+    # normal runtime leaves this metadata unavailable rather than guessing.
     if reference_dir is None:
-        reference_dir = os.getenv(
-            "FUSION_SERVICE_DIR",
-            str(Path(__file__).resolve().parent.parent / "fusion_service"))
-        reference_dir = Path(reference_dir) / "reference"
+        return {}
     reference_dir = Path(reference_dir)
 
     out: Dict[str, Any] = {}
