@@ -45,6 +45,10 @@ jobs:
         working-directory: central_backend
         run: python test_phase0_contracts.py
 
+      - name: Validate Phase 1 authentication and assignments
+        working-directory: central_backend
+        run: python test_phase1_auth.py
+
       - name: Import application
         working-directory: central_backend
         run: python -c "from main import app; print(app.title)"
