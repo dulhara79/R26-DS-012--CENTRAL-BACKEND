@@ -23,16 +23,50 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_tmpdb.name}"
 os.environ["MRN_PEPPER"] = "test-pepper-not-for-production"
 os.environ["FUSION_URL"] = "https://fusion.test.invalid"
 os.environ["FUSION_API_TOKEN"] = "test-fusion-token"
+os.environ["AUTH_JWT_ISSUER"] = "https://auth.test"
+os.environ["AUTH_JWT_AUDIENCE"] = "r26ds012-central-backend"
+os.environ["AUTH_JWT_ALGORITHMS"] = "HS256"
+os.environ["AUTH_JWT_SECRET"] = "test-only-phase1-secret-not-for-production"
 
+import jwt  # noqa: E402
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import fusion_client  # noqa: E402
 import identity  # noqa: E402
 import modality_clients as mc  # noqa: E402
+from db_models import Clinician, SessionLocal  # noqa: E402
 from main import app  # noqa: E402
 
-client = TestClient(app)
+_now = dt.datetime.now(dt.timezone.utc)
+_clinician_token = jwt.encode(
+    {
+        "sub": "auth-sub-dr-test",
+        "clinician_id": "DR_TEST",
+        "role": "clinician",
+        "principal_type": "clinician",
+        "iss": os.environ["AUTH_JWT_ISSUER"],
+        "aud": os.environ["AUTH_JWT_AUDIENCE"],
+        "exp": _now + dt.timedelta(hours=1),
+    },
+    os.environ["AUTH_JWT_SECRET"],
+    algorithm="HS256",
+)
+_seed_db = SessionLocal()
+try:
+    if _seed_db.get(Clinician, "DR_TEST") is None:
+        _seed_db.add(Clinician(
+            clinician_id="DR_TEST",
+            auth_subject="auth-sub-dr-test",
+            display_name="Dr Test",
+            role="clinician",
+            status="active",
+        ))
+        _seed_db.commit()
+finally:
+    _seed_db.close()
+
+client = TestClient(app, headers={"Authorization": f"Bearer {_clinician_token}"})
 
 passed, failed = 0, 0
 
