@@ -21,13 +21,13 @@ import tempfile
 _tmpdb = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmpdb.name}"
 os.environ["MRN_PEPPER"] = "test-pepper-not-for-production"
-os.environ["FUSION_MODE"] = "inprocess"
-os.environ["FUSION_SERVICE_DIR"] = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "fusion_service"))
+os.environ["FUSION_URL"] = "https://fusion.test.invalid"
+os.environ["FUSION_API_TOKEN"] = "test-fusion-token"
 
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+import fusion_client  # noqa: E402
 import identity  # noqa: E402
 import modality_clients as mc  # noqa: E402
 from main import app  # noqa: E402
@@ -126,6 +126,59 @@ mc.call_c1, mc.call_c2, mc.call_c3, mc.call_c4 = stub_c1, stub_c2, stub_c3, stub
 import main  # noqa: E402
 main.mc.call_c1, main.mc.call_c2, main.mc.call_c3, main.mc.call_c4 = (
     stub_c1, stub_c2, stub_c3, stub_c4)
+
+# Fusion is independently owned and deployed. Central Backend tests therefore
+# use a deterministic contract stub rather than importing or reproducing
+# scientific fusion mathematics.
+_REAL_FUSION_FUSE = fusion_client.fuse
+_FAKE_FUSION_CALLS = []
+_FAKE_FUSION_SUBJECTS = {}
+
+
+def stub_fusion(subject_id, readings):
+    modalities = tuple(sorted(readings))
+    _FAKE_FUSION_CALLS.append({"subject_id": subject_id, "modalities": modalities})
+    if subject_id not in _FAKE_FUSION_SUBJECTS:
+        _FAKE_FUSION_SUBJECTS[subject_id] = len(_FAKE_FUSION_SUBJECTS)
+
+    # Contract fixture values only. They are deliberately unrelated to clinical
+    # scores and are NOT an alternative fusion algorithm.
+    idx = _FAKE_FUSION_SUBJECTS[subject_id]
+    fixture_scores = (0.45, 0.55, 0.60, 0.50)
+    fixture_tiers = ("Medium", "Medium", "Medium", "Medium")
+    composite = fixture_scores[idx % len(fixture_scores)]
+    tier = fixture_tiers[idx % len(fixture_tiers)]
+
+    active = list(modalities)
+    if len(active) == 3:
+        weights = {
+            active[0]: 0.30,
+            active[1]: 0.40,
+            active[2]: 0.30,
+            "c2_behavioral": 0.0,
+        }
+    elif len(active) == 2:
+        weights = {active[0]: 0.50, active[1]: 0.50, "c2_behavioral": 0.0}
+    else:
+        weights = {m: 1.0 / len(active) for m in active} if active else {}
+        weights.setdefault("c2_behavioral", 0.0)
+
+    return {
+        "composite_score": composite,
+        "tier": tier,
+        "band": "AMBER",
+        "confidence": 0.50,
+        "modalities_available": len(active),
+        "renormalised": len(active) != 4,
+        "weights": weights,
+        "contributions": {m: 0.0 for m in active},
+        "harmonisation": {"test_stub": True},
+        "reason": None,
+        "model_version": "fake-fusion-contract-v1",
+    }
+
+
+fusion_client.fuse = stub_fusion
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -379,16 +432,8 @@ check("fresh reading near full weight", eff_fresh > 0.9)
 check("3h-old c1 reading falls below the floor", eff_stale < gate.EFFECTIVE_WEIGHT_FLOOR)
 check("a prior never decays", eff_prior == 1.0)
 
-# gate.py deliberately duplicates fusion.py's HALF_LIFE_MIN (no runtime coupling
-# between the two services) — but a silent drift between them would reintroduce
-# a version of the exact bug this floor exists to catch. Prove they still match.
-_fusion_dir = os.environ["FUSION_SERVICE_DIR"]
-if _fusion_dir not in sys.path:
-    sys.path.insert(0, _fusion_dir)
-import fusion as fusion_maths  # noqa: E402
-check("gate half-lives match fusion.py's half-lives",
-      gate.HALF_LIFE_MINUTES == fusion_maths.HALF_LIFE_MIN,
-      f"gate={gate.HALF_LIFE_MINUTES} fusion={fusion_maths.HALF_LIFE_MIN}")
+# Do not import the external Fusion Service here. Cross-service scientific
+# constants belong to an explicit versioned contract, not a vendored module.
 
 # Simulate the bug directly: temporarily loosen MAX_AGE the way the old code
 # had it, and confirm the floor STILL rejects a 3h-old reading even though the
@@ -582,16 +627,11 @@ check("manual fusion endpoint still works", r5.status_code == 200 and _fusion_co
 # ═════════════════════════════════════════════════════════════════════════════
 section("15 · Conformal prediction — honest sets, calibrated only when earned")
 import conformal  # noqa: E402
-import fusion as fusion_maths2  # noqa: E402 (already on sys.path from section 8b)
 
 from db_models import Verdict  # noqa: E402
 
-# band edges must match fusion.py's BANDS — a silent drift here would make the
-# conformal guarantee apply to the wrong intervals
-fusion_edges = [e for e, _ in fusion_maths2.BANDS]
-check("conformal intervals match fusion band edges",
-      abs(conformal.TIER_INTERVALS["Low"][1] - fusion_edges[0]) < 1e-9
-      and abs(conformal.TIER_INTERVALS["Medium"][1] - fusion_edges[1]) < 1e-9)
+# Fusion tier thresholds are owned by the external Fusion Service. This suite
+# tests Central Backend conformal behavior without importing Fusion internals.
 
 # (a) zero verdicts -> full set, explicitly uncalibrated, with a stated reason
 r = client.post("/v1/fusion/run", json={"subject_id": P1, "trigger": "conformal-test"}).json()
@@ -891,17 +931,18 @@ check("...but it is never promoted to raw_score",
 
 # ── three independent locks keep C2 out of the composite ────────────────────
 import gate as gate_mod  # noqa: E402
-import fusion as fusion_mod2  # noqa: E402
 check("LOCK 1: their service reports fusion_eligible=false",
       resp.get("fusion_eligible") is False)
 check("LOCK 2: our gate excludes c2_behavioral unconditionally",
       "c2_behavioral" in gate_mod.EXCLUDED_MODALITIES)
-check("LOCK 3: fusion weight for c2 is exactly 0.0",
-      fusion_mod2.base_weights()["c2_behavioral"] == 0.0)
 
 r = client.post("/v1/fusion/run", json={"subject_id": P1}).json()
 check("c2 absent from usable modalities after a real C2 ingest",
       "c2_behavioral" not in r["gate"]["usable_modalities"])
+check("C2 is not sent across the external Fusion boundary",
+      bool(_FAKE_FUSION_CALLS) and
+      "c2_behavioral" not in _FAKE_FUSION_CALLS[-1]["modalities"],
+      str(_FAKE_FUSION_CALLS[-1] if _FAKE_FUSION_CALLS else None))
 
 # ── external id mapping (C2 keys on P_65DC..., we key on UUIDs) ──────────────
 r = client.post(f"/v1/subjects/{P1}/external-ids",
@@ -931,6 +972,83 @@ check("the same external id cannot be claimed by a second patient",
       client.post(f"/v1/subjects/{r2['subject_id']}/external-ids",
                   json={"modality": "c2_behavioral",
                         "external_id": "P_NEWVALUE"}).status_code == 409)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+section("18 · External Fusion HTTP adapter contract")
+_seen_fusion_http = {}
+
+
+class _FusionHttpResponse:
+    status_code = 200
+
+    @staticmethod
+    def raise_for_status():
+        return None
+
+    @staticmethod
+    def json():
+        return {
+            "composite_score": 0.42,
+            "tier": "Medium",
+            "band": "AMBER",
+            "modalities_available": 2,
+            "weights": {},
+            "contributions": {},
+            "harmonisation": {},
+            "model_version": "external-test",
+        }
+
+
+def _stub_fusion_http_post(url, **kwargs):
+    _seen_fusion_http.update({"url": url, **kwargs})
+    return _FusionHttpResponse()
+
+
+_real_httpx_post = httpx.post
+_old_fusion_url = fusion_client.FUSION_URL
+_old_fusion_token = fusion_client.FUSION_TOKEN
+try:
+    httpx.post = _stub_fusion_http_post
+    fusion_client.FUSION_URL = "https://fusion.example"
+    fusion_client.FUSION_TOKEN = "service-token"
+    result = _REAL_FUSION_FUSE(
+        "subject-http-test",
+        {
+            "c1_physiological": {
+                "raw_score": 41.8,
+                "confidence": 0.5,
+                "coverage": 0.5,
+                "captured_at": dt.datetime(2026, 9, 18, tzinfo=dt.timezone.utc),
+            },
+            "c4_demographic": {
+                "raw_score": 0.55,
+                "confidence": 0.6,
+                "coverage": 1.0,
+                "captured_at": dt.datetime(2026, 9, 18, tzinfo=dt.timezone.utc),
+            },
+        },
+    )
+finally:
+    httpx.post = _real_httpx_post
+    fusion_client.FUSION_URL = _old_fusion_url
+    fusion_client.FUSION_TOKEN = _old_fusion_token
+
+check("Fusion adapter calls POST /v1/fuse/manual",
+      _seen_fusion_http.get("url") == "https://fusion.example/v1/fuse/manual",
+      str(_seen_fusion_http))
+check("Fusion adapter sends service bearer token",
+      _seen_fusion_http.get("headers", {}).get("Authorization") == "Bearer service-token")
+_http_payload = _seen_fusion_http.get("json", {})
+check("Fusion adapter sends one subject identifier",
+      _http_payload.get("mrn") == "subject-http-test")
+check("Fusion adapter sends already_harmonised=false",
+      _http_payload.get("already_harmonised") is False)
+check("Fusion adapter sends only supplied component readings",
+      set((_http_payload.get("components") or {})) ==
+      {"c1_physiological", "c4_demographic"})
+check("Fusion adapter returns upstream result without local score computation",
+      result.get("composite_score") == 0.42 and result.get("model_version") == "external-test")
 
 
 print(f"\n{'=' * 74}")

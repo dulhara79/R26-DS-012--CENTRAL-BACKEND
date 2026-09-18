@@ -1,4 +1,4 @@
-name: Central Backend Baseline CI
+name: Central Backend Boundary CI
 
 on:
   push:
@@ -8,13 +8,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  baseline:
+  central-backend:
     runs-on: ubuntu-latest
     env:
       MRN_PEPPER: ci-only-not-for-production
       DATABASE_URL: sqlite:///./ci-central-backend.db
-      FUSION_MODE: inprocess
-      FUSION_SERVICE_DIR: ../fusion_service
+      FUSION_URL: https://fusion.invalid
+      FUSION_API_TOKEN: ci-fake-token
 
     steps:
       - uses: actions/checkout@v4
@@ -27,16 +27,17 @@ jobs:
       - name: Install Central Backend dependencies
         run: pip install -r central_backend/requirements.txt
 
-      - name: Verify pinned source layout
+      - name: Verify Central-Backend-only layout
         run: |
           test -f central_backend/main.py
           test -f central_backend/db_models.py
           test -f central_backend/gate.py
           test -f central_backend/fusion_client.py
-          test -f fusion_service/fusion.py
-          test -f fusion_service/harmonise.py
+          test ! -d fusion_service
+          ! grep -R -nE '^[[:space:]]*(from[[:space:]]+(fusion|harmonise)[[:space:]]|import[[:space:]]+(fusion|harmonise)([[:space:]]|$))' central_backend --include='*.py'
+          ! grep -R -n "FUSION_SERVICE_DIR" central_backend --include='*.py'
 
-      - name: Run synchronized Central Backend validation
+      - name: Run Central Backend validation with deterministic service stubs
         working-directory: central_backend
         run: python test_backend.py
 
@@ -44,8 +45,8 @@ jobs:
         working-directory: central_backend
         run: python -c "from main import app; print(app.title)"
 
-      - name: Check clean source identity
+      - name: Record pinned source provenance
         run: |
           echo "component4final commit: a1ceef8daba268dac24d81aedd76c89e7c9ccc6a"
-          echo "central_backend tree: 87585bb3c823b9de449c1a0be1efd9d65f815fd2"
-          echo "fusion_service tree: 1184427955ddd2f7be40eb00f915290356177a14"
+          echo "source central_backend tree: 87585bb3c823b9de449c1a0be1efd9d65f815fd2"
+          echo "Fusion is an external dependency and is not vendored in this repository."

@@ -117,19 +117,15 @@ def _pct(x: float) -> float:
 
 
 def _resolve_thresholds(supplied: Optional[Dict[str, float]]) -> Tuple[Dict[str, float], bool]:
-    """Prefer thresholds handed in by the caller (which should read them from
-    fusion.py) over this module's defaults. Returns (thresholds, is_authoritative)
-    so the explanation can flag when it is guessing the cut-points."""
+    """Prefer thresholds explicitly supplied from an authoritative result/contract.
+
+    The Central Backend no longer imports Fusion Service code. When thresholds
+    are not supplied, CARE-X retains its existing local defaults but marks them
+    non-authoritative so the explanation cannot claim they are deployed Fusion
+    thresholds.
+    """
     if supplied:
         return dict(supplied), True
-    try:                                            # best effort, never fatal
-        import fusion  # type: ignore
-        for attr in ("TIER_THRESHOLDS", "TIERS_THRESHOLDS", "BANDS"):
-            t = getattr(fusion, attr, None)
-            if isinstance(t, dict) and t:
-                return dict(t), True
-    except Exception:                               # noqa: BLE001
-        pass
     return dict(DEFAULT_TIER_THRESHOLDS), False
 
 
@@ -342,36 +338,13 @@ def _layer_counterfactuals(weights: Dict[str, float], harmonisation: Dict[str, A
 
 # ── base weights ────────────────────────────────────────────────────────────
 def load_base_weights() -> Optional[Dict[str, float]]:
-    """Pull base (reliability-free) modality weights from the fusion service.
+    """Return no local copy of Fusion base weights.
 
-    These are needed for the scarcity term of the inflation measure: without
-    them the per-modality reliability ratio is still computable, but the
-    panel-level scarcity factor is not, because it depends on the base weight
-    of modalities that are ABSENT — a quantity nothing in the stored fusion
-    result can recover. Returns None rather than a guess.
+    Base weights are scientific Fusion Service state owned outside this
+    repository. The corrected Central Backend boundary does not import or
+    reproduce them. CARE-X already treats None as unavailable and omits the
+    panel-level scarcity calculation rather than guessing.
     """
-    import os
-    import sys
-    from pathlib import Path
-
-    # fusion.py is not on the Python path by default — it lives in a sibling
-    # folder, not central_backend/. Mirror the exact resolution fusion_client.py
-    # already uses so both modules always agree on where to look.
-    fusion_dir = Path(os.getenv("FUSION_SERVICE_DIR",
-                                Path(__file__).resolve().parent.parent / "fusion_service"))
-    if str(fusion_dir) not in sys.path:
-        sys.path.insert(0, str(fusion_dir))
-
-    try:
-        import fusion  # type: ignore
-        bw = getattr(fusion, "base_weights", None)
-        if callable(bw):
-            out = {k: v for k, v in bw().items() if _f(v) is not None}
-            return out or None
-        if isinstance(bw, dict) and bw:
-            return {k: v for k, v in bw.items() if _f(v) is not None}
-    except Exception:                                       # noqa: BLE001
-        pass
     return None
 
 
@@ -1033,14 +1006,14 @@ def load_reference_status(reference_dir: Any = None) -> Dict[str, Any]:
     is worse than one missing a single caveat.
     """
     import json
-    import os
     from pathlib import Path
 
+    # Reference distributions belong to the external Fusion Service. The
+    # Central Backend does not discover them from a sibling source tree. An
+    # explicit directory may still be supplied by an offline validation caller;
+    # normal runtime leaves this metadata unavailable rather than guessing.
     if reference_dir is None:
-        reference_dir = os.getenv(
-            "FUSION_SERVICE_DIR",
-            str(Path(__file__).resolve().parent.parent / "fusion_service"))
-        reference_dir = Path(reference_dir) / "reference"
+        return {}
     reference_dir = Path(reference_dir)
 
     out: Dict[str, Any] = {}

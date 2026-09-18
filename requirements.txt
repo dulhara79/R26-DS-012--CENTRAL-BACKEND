@@ -1,1 +1,2 @@
+# Central Backend dependencies only. Fusion, C4/DCAR and CARE-AnxRAG are external services.
 -r central_backend/requirements.txt

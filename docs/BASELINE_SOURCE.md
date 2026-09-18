@@ -1,40 +1,78 @@
 # Baseline Source Record
 
 Date synchronized: 2026-09-18
+Ownership correction: 2026-09-18
 
 ## Authoritative CURRENT source used
 
-Repository:
+Source repository:
 
-`https://github.com/UVINDUSEN/component4final`
+    https://github.com/UVINDUSEN/component4final
 
-Pinned commit:
+Pinned source commit:
 
-`a1ceef8daba268dac24d81aedd76c89e7c9ccc6a`
+    a1ceef8daba268dac24d81aedd76c89e7c9ccc6a
 
-Pinned trees:
+Pinned source tree used for the Central Backend:
 
-- `central_backend/`: `87585bb3c823b9de449c1a0be1efd9d65f815fd2`
-- `fusion_service/`: `1184427955ddd2f7be40eb00f915290356177a14`
+    central_backend/: 87585bb3c823b9de449c1a0be1efd9d65f815fd2
 
-## Synchronization rule
+For provenance only, the source repository's Fusion Service tree at that commit
+was:
 
-Files under `central_backend/` and `fusion_service/` in the baseline commit are byte-for-byte copies of the pinned source snapshot. The root-level Docker/CI/readme files are integration-repository wrappers and are not claimed to originate from component4final.
+    fusion_service/: 1184427955ddd2f7be40eb00f915290356177a14
 
-The previous independent Central Backend implementation is preserved on:
+That Fusion tree is NOT owned or vendored by this repository after the ownership
+correction.
 
-`archive/legacy-pre-handbook-2026-09-18`
+## What PR #2 did
 
-## Ownership boundary
+PR #2 synchronized both central_backend/ and fusion_service/ from the pinned
+component4final snapshot. It was merged before the later ownership clarification.
 
-The Central Backend integration work may add handbook TARGET capabilities around the synchronized baseline.
+The previous independent Central Backend implementation remains preserved on:
 
-The fusion snapshot exists for reproducibility and the existing in-process test/local mode. Scientific fusion formulae, harmonisation references, registered exclusions, weights, and model-version semantics must not be independently changed as part of Central Backend integration work. Changes to fusion research logic require the fusion/component owner and research-method approval.
+    archive/legacy-pre-handbook-2026-09-18
 
-## Handbook source-of-truth rule
+## Corrected ownership boundary
 
-- CURRENT: synchronized implementation above.
-- TARGET: requirements explicitly defined in the system-integration handbook / approved app contracts.
-- PROPOSED: recommendations that must not be presented as implemented or validated behavior.
+This repository owns the Central Backend integration layer only.
 
-Do not silently reconcile CURRENT/TARGET differences.
+Uvindu independently owns:
+
+- C4/DCAR scientific model and deployment
+- Multimodal Fusion Service, including fusion mathematics, harmonisation,
+  weights, reference distributions, registered exclusion logic and model version
+- CARE-AnxRAG retrieval/generation internals and scientific validation
+
+The Central Backend calls those services over HTTP. Their implementations are
+not copied here.
+
+## Baseline identity and documented deviations
+
+Before the ownership correction, every file under central_backend/ was verified
+byte-for-byte against the pinned central_backend tree above.
+
+The correction intentionally changes only integration-owned files required to
+enforce the external service boundary. In particular:
+
+- central_backend/fusion_client.py is HTTP-only and calls POST /v1/fuse/manual;
+- central_backend/env.example.txt no longer configures an in-process Fusion path;
+- central_backend/test_backend.py uses a deterministic test stub instead of
+  importing Fusion scientific code;
+- central_backend/explain.py no longer imports Fusion thresholds/base weights;
+  when authoritative values are not supplied, CARE-X explicitly marks its
+  existing fallback thresholds non-authoritative and omits unavailable
+  base-weight scarcity calculations;
+- root Docker/CI/readme files package and verify the Central Backend only.
+
+All other central_backend baseline files remain pinned-source copies unless a
+later handbook phase explicitly changes them through a reviewed PR.
+
+## Source-of-truth rule
+
+- CURRENT: verified behavior in the checked-out implementation.
+- TARGET: handbook/specification requirement not necessarily implemented yet.
+- PROPOSED: engineering recommendation not yet implemented/validated.
+
+Do not silently reconcile differences between these categories.
